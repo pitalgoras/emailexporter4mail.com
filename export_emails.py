@@ -366,6 +366,112 @@ SEARCH_FOLDER = os.environ.get("OPEXPORT_SEARCH_FOLDER", "All folders")
 # them again after the filter is finalized (env -> config -> prompt); the name
 # is stable per filter, so the same filter always reuses the same folder.
 _derive_dirs(_resolve_run_name())
+
+
+# ── Filesystem journaling detection (soft requirement warning) ────────────
+# A non-journaling volume (FAT32/exFAT, typically a USB stick) works for a
+# clean run but risks corrupted progress/artifacts if unplugged mid-save. We
+# detect this so we can warn. Best-effort: any failure => None (don't warn,
+# don't crash). Stdlib only; no third-party deps.
+def _win_fs_info(path: str) -> tuple[str, bool | None]:
+    try:
+        import ctypes
+        from ctypes import wintypes as w
+        root = f"{os.path.splitdrive(os.path.realpath(path))[0]}\\"
+        dll = ctypes.WinDLL("kernel32", use_last_error=True)
+        dll.GetVolumeInformationW.argtypes = [
+            w.LPCWSTR, w.LPWSTR, w.DWORD, w.LPDWORD,
+            w.LPDWORD, w.LPDWORD, w.LPWSTR, w.DWORD,
+        ]
+        dll.GetVolumeInformationW.restype = w.BOOL
+        vol = ctypes.create_unicode_buffer(261)
+        fs = ctypes.create_unicode_buffer(261)
+        serial = w.DWORD(); max_comp = w.DWORD(); flags = w.DWORD()
+        if not dll.GetVolumeInformationW(root, vol, 261, ctypes.byref(serial),
+                                         ctypes.byref(max_comp), ctypes.byref(flags),
+                                         fs, 261):
+            return ("", None)
+        # Direct journaling flag: the NTFS/ReFS USN journal bit.
+        FILE_SUPPORTS_USN_JOURNAL = 0x02000000
+        return (fs.value, bool(flags.value & FILE_SUPPORTS_USN_JOURNAL))
+    except Exception:
+        return ("", None)
+
+
+def _mac_fs_info(path: str) -> tuple[str, bool | None]:
+    try:
+        import subprocess
+        out = subprocess.check_output(["mount"], text=True)
+        path = os.path.realpath(path)
+        best = ""; fstype = ""; journaled = False
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[1] == "on":
+                mp = parts[2]
+                if path.startswith(mp) and len(mp) > len(best):
+                    best = mp
+                    opts = line.split("(", 1)[1].rstrip(")")
+                    fstype = opts.split(",")[0].strip()
+                    journaled = "journaled" in opts
+        return (fstype, journaled if best else None)
+    except Exception:
+        return ("", None)
+
+
+def _linux_fs_info(path: str) -> tuple[str, bool | None]:
+    # findmnt resolves the mountpoint even if the path doesn't exist yet.
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["findmnt", "-n", "-o", "FSTYPE", "-T", path], text=True).strip()
+        if out:
+            non_journaled = {"vfat", "exfat", "fat", "msdos", "fat32"}
+            return (out, out.lower() not in non_journaled)
+    except Exception:
+        pass
+    # Fallback: stat -f -c %T on the nearest existing ancestor.
+    try:
+        import subprocess
+        p = os.path.realpath(path)
+        while not os.path.exists(p):
+            np = os.path.dirname(p)
+            if np == p:
+                break
+            p = np
+        out = subprocess.check_output(
+            ["stat", "-f", "-c", "%T", p], text=True).strip()
+        if not out:
+            return ("", None)
+        nj = {"vfat", "exfat", "fat", "msdos", "fat32"}
+        if out.lower() in nj:
+            return (out, False)
+        # Unknown types default to "journaled" (don't warn) — only warn when we
+        # are sure it is non-journaling.
+        return (out, True)
+    except Exception:
+        return ("", None)
+
+
+def fs_info(path: str) -> tuple[str, bool | None]:
+    """Return ``(fstype, is_journaled)`` for the volume backing *path*.
+
+    ``is_journaled`` is ``None`` when it cannot be determined (caller should
+    neither warn nor assume)."""
+    if sys.platform == "win32":
+        return _win_fs_info(path)
+    if sys.platform == "darwin":
+        return _mac_fs_info(path)
+    return _linux_fs_info(path)
+
+
+def _output_is_nonjournaling(path: str) -> bool | None:
+    try:
+        _, journaled = fs_info(path)
+    except Exception:
+        return None
+    if journaled is None:
+        return None
+    return not journaled
 # The logged-in mailbox address. Used to decide whether an email was SENT (you
 # are the sender) or RECEIVED (you are the recipient), and to pick the other
 # party for the filename. Resolved at runtime (env -> local saved config ->
@@ -569,8 +675,14 @@ async def _wait_for_state(
 
 def load_progress() -> dict:
     if os.path.exists(PROGRESS_FILE):
-        with open(PROGRESS_FILE) as f:
-            return json.load(f)
+        try:
+            with open(PROGRESS_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as _e:
+            print(f"  WARNING: could not read {PROGRESS_FILE} ({_e}); "
+                  f"starting from a clean state. If this is a non-journaling "
+                  f"volume that was unplugged mid-save, consider --fresh after "
+                  f"repairing the filesystem.")
     return {"exported": 0, "last_page": 1, "skip_on_page": 0, "search_done": False,
             "max_pages": 0, "exported_ids": [], "seen_ids": [],
             "attachment_ids": [], "exported_map": {}, "partials": [],
@@ -579,8 +691,23 @@ def load_progress() -> dict:
 
 def save_progress(p: dict) -> None:
     os.makedirs(PROGRESS_DIR, exist_ok=True)
-    with open(PROGRESS_FILE, "w") as f:
+    # Atomic + durable write: temp file -> fsync -> rename over -> fsync dir.
+    # A crash can no longer leave export_progress.json truncated (which would
+    # otherwise crash the next run at startup on a non-journaling volume).
+    tmp = PROGRESS_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(p, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, PROGRESS_FILE)
+    try:
+        dfd = os.open(PROGRESS_DIR, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
 
 def count_downloaded_files() -> int:
     n = 0
@@ -2050,6 +2177,59 @@ else:
     return date, subject, act_index, next_btn_idx, attach_indiv, attach_zip
 
 
+def _eml_ok(path: str) -> bool:
+    """Lenient integrity check: rejects truncated/garbage .eml files.
+
+    Only fails on clear corruption (unparseable, or missing the core
+    Message-ID/Date headers), so valid mail.com exports are never rejected."""
+    if not os.path.isfile(path):
+        return False
+    try:
+        if os.path.getsize(path) < 32:
+            return False
+        import email as _email
+        with open(path, "rb") as f:
+            msg = _email.message_from_binary_file(f)
+        if not msg.get("Message-ID") and not msg.get("Date"):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _html_ok(path: str) -> bool:
+    """Lenient integrity check for the saved .html (rejects blank/truncated)."""
+    if not os.path.isfile(path):
+        return False
+    try:
+        # A real mail.com .html export is a full page (many KB); only reject
+        # near-empty/truncated output. Kept low to avoid false rejections.
+        return os.path.getsize(path) >= 64
+    except OSError:
+        return False
+
+
+def _att_zip_ok(prefix: str) -> bool:
+    """If a downloaded attachment ZIP exists for *prefix*, verify it is intact.
+
+    Returns True when there is nothing to check (no attachments / only
+    individual files, which are presence-checked elsewhere)."""
+    d = os.path.join(ATTACH_DIR, prefix)
+    if not os.path.isdir(d):
+        return True
+    import zipfile
+    for fn in os.listdir(d):
+        if fn.lower().endswith(".zip"):
+            zp = os.path.join(d, fn)
+            try:
+                with zipfile.ZipFile(zp) as z:
+                    if z.testzip() is not None:
+                        return False
+            except Exception:
+                return False
+    return True
+
+
 async def export_single_email() -> tuple[bool, bool, str, bool, int | None, dict]:
     """Export .html and .eml for the currently open email detail view.
 
@@ -2084,7 +2264,12 @@ async def export_single_email() -> tuple[bool, bool, str, bool, int | None, dict
     if _existing is not None:
         _eml = os.path.join(EML_DIR, _existing + '.eml')
         _htm = os.path.join(HTML_DIR, _existing + '.html')
-        if os.path.exists(_eml) and os.path.exists(_htm):
+        # Validate the existing pair (and any attachment ZIP) before trusting it.
+        # A corrupt-but-present file on a non-journaling volume would otherwise
+        # be silently accepted as "done".
+        if (os.path.exists(_eml) and _eml_ok(_eml)
+                and os.path.exists(_htm) and _html_ok(_htm)
+                and _att_zip_ok(_existing)):
             print(f"    [export] already complete on disk, skipping: {_existing}")
             return (True, True, _existing, True, next_btn_idx, diag)
         name_prefix = _existing
@@ -2216,6 +2401,26 @@ async def export_single_email() -> tuple[bool, bool, str, bool, int | None, dict
         saved_eml = True
     else:
         print(f"    [export] .eml not downloaded")
+
+    # ── 4) Integrity validation ──
+    # Catches truncated/corrupt artifacts (e.g. a USB stick unplugged mid-save)
+    # so they are retried instead of silently accepted as complete. A failed
+    # check flips the saved flag to False; the partial file stays on disk but
+    # the idempotent-skip above re-validates it on the next attempt.
+    if saved_eml and not _eml_ok(os.path.join(EML_DIR, f"{name_prefix}.eml")):
+        print(f"    [export] .eml failed integrity check (possible corruption), "
+              f"will retry")
+        saved_eml = False
+        diag["reason"] = "EML_CORRUPT"
+    if saved_html and not _html_ok(os.path.join(HTML_DIR, f"{name_prefix}.html")):
+        print(f"    [export] .html failed integrity check (possible corruption), "
+              f"will retry")
+        saved_html = False
+        diag["reason"] = "HTML_CORRUPT"
+    if att_count and not _att_zip_ok(name_prefix):
+        print(f"    [export] attachment archive failed integrity check, will retry")
+        att_ok = False
+        diag["reason"] = "ATT_CORRUPT"
 
     return (saved_html, saved_eml, name_prefix, att_ok, next_btn_idx, diag)
 
@@ -2966,6 +3171,14 @@ async def main():
     # re-running the same filter resumes the existing archive instead of starting
     # a new timestamped folder.
     _derive_dirs(_resolve_run_name())
+    # Soft-requirement warning: a non-journaling volume (FAT32/exFAT, e.g. a USB
+    # stick) works for a clean run but risks corruption if unplugged mid-save.
+    if _output_is_nonjournaling(RUN_DIR):
+        print("\n  WARNING: OPEXPORT_ROOT is on a NON-JOURNALING filesystem "
+              "(FAT32/exFAT, e.g. a USB stick). A clean run works but is much "
+              "slower, and unplugging/unmounting it WHILE saving can corrupt "
+              "files. If that happens: repair the filesystem, then re-run with "
+              "--fresh to guarantee no archived email is corrupted.\n")
     FRESH = '--fresh' in sys.argv
     NEW = '--new' in sys.argv
     LIMIT = None

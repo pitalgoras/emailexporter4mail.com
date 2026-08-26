@@ -112,6 +112,31 @@ prompt crashing in a non-TTY. A clean start is always available via `--fresh`.
 | `OPEXPORT_POLL_INTERVAL` | *(per-call default)* | Override the poll interval in `_wait_for_state` (seconds). |
 | `OPEXPORT_MAX_FAILURES` | `5` | Consecutive partial/fail exports before the run aborts. |
 
+### 2.1 Output filesystem — non-journaling volumes (soft requirement)
+
+Exporting to a non-journaling filesystem such as **FAT32/exFAT** — typically a
+USB stick — works fine for a clean run, **but it is much slower** (many small
+files, no journal to coalesce writes). Using a journaling volume (ext4 / XFS /
+Btrfs / ZFS / NTFS / APFS) is a **soft requirement**: if the USB is unplugged
+or unmounted **while saving**, we recommend you **repair the USB filesystem**
+(chkdsk / fsck) and then **start the export from scratch** (run with `--fresh`,
+or delete the run folder) to guarantee no email in the archive is corrupted.
+
+The tool **detects** a non-journaling `OPEXPORT_ROOT` at startup (Linux /
+macOS / Windows — no third-party dependencies) and prints this warning. It also
+writes `export_progress.json` atomically and **validates every saved email**
+(re-parses the `.eml`, checks the `.html` is non-trivial, and `testzip`s any
+attachment archive), so a truncated/corrupt file is retried rather than
+silently accepted — but an interrupted save can still leave a partial file, so
+`--fresh` after a repair remains the safe choice.
+
+> **If you've never heard of "journaling", don't worry.** It just keeps writes
+> consistent after a crash (power loss, kernel panic, pulled drive). Every
+> mainstream OS ships a journaling filesystem by default, so a normal machine
+> already has it. You only lack it if an administrator explicitly configured a
+> volume without a journal (rare, and usually for an exotic reason). If your
+> archive lives on your usual internal SSD/HDD, you're fine.
+
 ---
 
 ## 3. Architecture
@@ -212,6 +237,11 @@ to GitHub) runs N complete (or `--select`) exports on empty per-run folders with
 different tunables; analyze the span
 `max(mtime) − min(mtime)` of the run folder's files for the true export time, and
 count `.eml`/`.html`/attachment files for completeness.
+
+> Note: the "filesystem journal" here means file **mtime timestamps** used to
+> *measure* performance. That is unrelated to the **journaling filesystem**
+> *reliability* requirement in §2.1 (a non-journaling volume like FAT32/exFAT is
+> slower and riskier on an unclean shutdown).
 
 ```bash
 bash run_perf.sh                 # 3 short --select runs, varying WAIT/SLEEP/POLL
