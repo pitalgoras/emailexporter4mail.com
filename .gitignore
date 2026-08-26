@@ -8,6 +8,7 @@ scratch/
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
 # Export artifacts (in case OPEXPORT_ROOT points inside the repo)
 eml/

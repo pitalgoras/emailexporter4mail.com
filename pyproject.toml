@@ -1,0 +1,18 @@
+[project]
+name = "emailexporter4mail"
+version = "0.1.0"
+description = "Export mail.com emails as .eml + .html with attachments via the openbrowser-ai daemon"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "questionary>=2.0",
+    "openbrowser-ai",
+    "playwright",
+]
+
+[tool.uv]
+# This project is not packaged/installed; `uv run` only manages a virtual
+# environment with the dependencies above so the scripts always execute with a
+# Python that can `import openbrowser`. The mail.com daemon itself is launched by
+# the script via `uvx openbrowser-ai` (also part of uv).
+package = false

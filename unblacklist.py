@@ -9,16 +9,17 @@ stuck/stale entry that keeps failing (e.g. after you fixed the underlying
 cause — wrong zoom, dead daemon, etc.).
 
 Usage:
-    python3 unblacklist.py                 # --list (default)
-    python3 unblacklist.py --list
-    python3 unblacklist.py --remove eidA,eidB
-    python3 unblacklist.py --remove-all
-    python3 unblacklist.py --rerun         # spawn export_emails.py to retry them
-    OPEXPORT_RUN=run1 python3 unblacklist.py --list
+    uv run unblacklist.py                 # --list (default)
+    uv run unblacklist.py --list
+    uv run unblacklist.py --remove eidA,eidB
+    uv run unblacklist.py --remove-all
+    uv run unblacklist.py --rerun         # spawn export_emails.py to retry them
+    OPEXPORT_RUN=run1 uv run unblacklist.py --list
 """
 import os
 import sys
 import json
+import shutil
 import subprocess
 
 import export_emails as E
@@ -100,7 +101,11 @@ def do_rerun():
     pending = prog.get("bogus_ids", []) or []
     if not pending:
         print("Nothing retry-pending. Running a normal resume anyway.")
-    args = [sys.executable, os.path.join(SRC_DIR, "export_emails.py")]
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        args = [uv_bin, "run", os.path.join(SRC_DIR, "export_emails.py")]
+    else:
+        args = [sys.executable, os.path.join(SRC_DIR, "export_emails.py")]
     print(f"Re-running export to retry {len(pending)} pending email(s)...")
     subprocess.run(args, cwd=SRC_DIR)
 

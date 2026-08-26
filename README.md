@@ -7,28 +7,18 @@ routing, and open-by-`eid` traversal.
 **Nothing is hardwired.** Every behaviour is configurable through `OPEXPORT_*`
 environment variables so different users can run different exports unchanged.
 
-**Prerequisites:** Python 3.11+, `openbrowser-ai` (daemon), `playwright`.
-Install all dependencies with:
+**Prerequisites:** `uv` (Python 3.11+ and all dependencies are managed automatically).
+The `openbrowser-ai` daemon is launched by the script via `uvx openbrowser-ai` (part of
+`uv`), so there is no manual install step.
 
 ```bash
-pip install -r requirements.txt
+uv run export_emails.py          # or:  uv run run_interactive.py
 ```
 
-> **Interpreter matters.** `export_emails.py` imports the `openbrowser` package, so it
-> must be run with the **same Python** that `pip install -r requirements.txt` targeted.
-> The simplest reliable setup is a virtual environment:
->
-> ```bash
-> python3 -m venv .venv && . .venv/bin/activate
-> pip install -r requirements.txt
-> python export_emails.py ...     # the venv's python has openbrowser
-> ```
->
-> If you installed `openbrowser-ai` via `uvx` instead, run the script with that
-> environment's interpreter (e.g. `~/.local/share/uv/tools/openbrowser-ai/bin/python3`),
-> not the system `python3` (which typically lacks `openbrowser` and fails at import).
-> The script fails loudly if `openbrowser` can't be imported, so a wrong interpreter is
-> caught immediately.
+`uv` reads `pyproject.toml`, creates a managed environment, and installs `openbrowser-ai`,
+`playwright`, and `questionary` on first run. You never invoke `python3` directly — `uv`
+always provides the correct interpreter (the one that has the `openbrowser` package), which
+avoids the "wrong interpreter / missing `openbrowser`" failure mode.
 
 ---
 
@@ -37,8 +27,7 @@ pip install -r requirements.txt
 ### Quick start (interactive TUI)
 
 ```bash
-pip install -r requirements.txt
-python3 run_interactive.py
+uv run run_interactive.py
 ```
 
 Opens a guided terminal UI that walks through all settings (search term, destination
@@ -55,10 +44,10 @@ environment variables.
 
 ```bash
 # Full export (all pages + Drafts folder) into a fresh per-run folder
-OPEXPORT_RUN=run1 python3 export_emails.py
+OPEXPORT_RUN=run1 uv run export_emails.py
 
 # Only a few emails, for testing (PAGE:COUNT syntax; COUNT>0 = first N, <0 = last N)
-OPEXPORT_RUN=sel1 python3 export_emails.py --select 1:-3,2:5,last:-1
+OPEXPORT_RUN=sel1 uv run export_emails.py --select 1:-3,2:5,last:-1
 #   page 1, last 3 emails (oldest) · page 2, first 5 (newest) · last page, last 1 (oldest)
 ```
 

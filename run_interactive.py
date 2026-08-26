@@ -4,14 +4,15 @@
 Provides a guided terminal UI for all OPEXPORT_* env vars and CLI flags,
 with preset save/load support. Run:
 
-    python3 run_interactive.py
-    python3 run_interactive.py --dry-run   # preview command, don't execute
+    uv run run_interactive.py
+    uv run run_interactive.py --dry-run   # preview command, don't execute
 
-Requires: pip install questionary
+Requires: `uv` (manages the environment; `uv run` installs questionary)
 """
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -328,7 +329,15 @@ def build_env_and_args(config: dict) -> tuple[dict[str, str], list[str]]:
     for k, v in config.get("env", {}).items():
         if v:
             env[k] = v
-    args = [sys.executable, str(EXPORT_SCRIPT)]
+    # Rely on uv for the child too: `uv run` always uses the project's managed
+    # environment (the interpreter that actually has the `openbrowser` package),
+    # regardless of how THIS launcher was started. Fall back to sys.executable only
+    # if uv is somehow unavailable.
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        args = [uv_bin, "run", str(EXPORT_SCRIPT)]
+    else:
+        args = [sys.executable, str(EXPORT_SCRIPT)]
     flags: dict = config.get("flags", {})
     if flags.get("--fresh"):
         args.append("--fresh")
@@ -426,7 +435,7 @@ def run_export(env: dict, args: list[str]):
 def main():
     if not sys.stdin.isatty():
         print("run_interactive.py requires an interactive terminal (TTY).")
-        print("Usage: python3 run_interactive.py  (opens a guided TUI)")
+        print("Usage: uv run run_interactive.py  (opens a guided TUI)")
         sys.exit(1)
     dry_run = "--dry-run" in sys.argv
     presets = list_presets()
