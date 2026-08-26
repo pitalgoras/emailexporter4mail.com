@@ -690,25 +690,45 @@ def kill_existing_daemons():
             pass
     try:
         p = _sp.run(["ps", "aux"], capture_output=True, text=True, timeout=5)
+        me = os.getpid()
+        parent = os.getppid()
         for line in p.stdout.split('\n'):
-            if 'openbrowser' in line and 'grep' not in line:
-                parts = line.split()
-                if parts:
-                    pid = int(parts[1])
-                    os.kill(pid, signal.SIGKILL)
+            if 'openbrowser' not in line or 'grep' in line:
+                continue
+            # Never kill our own export process: when run with the uvx-managed
+            # python its interpreter path contains "openbrowser"
+            # (.../openbrowser-ai/bin/python3), so a naive substring match would
+            # SIGKILL this script itself. Match on the script name instead.
+            if 'export_emails.py' in line:
+                continue
+            parts = line.split()
+            if not parts:
+                continue
+            try:
+                pid = int(parts[1])
+            except ValueError:
+                continue
+            if pid == me or pid == parent:
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
     except Exception:
         pass
     time.sleep(2)
 
 async def wait_for_daemon(timeout=30):
+    # Poll the socket file instead of pinging via run(): the openbrowser client's
+    # auto-start path spawns the server with sys.executable (the system python3,
+    # which lacks the openbrowser package) and would fail / hang. The daemon is
+    # started separately via `uvx openbrowser-ai` (step_start_daemon), so here we
+    # only need to confirm its socket has appeared.
+    sock = os.path.expanduser("~/.openbrowser/daemon.sock")
     deadline = time.time() + timeout
     while time.time() < deadline:
-        try:
-            ok, out = await run("print('ping')")
-            if ok:
-                return True
-        except Exception:
-            pass
+        if os.path.exists(sock):
+            return True
         await asyncio.sleep(1)
     return False
 
@@ -3109,13 +3129,26 @@ async def main():
     # Use --keepdaemon to skip the kill (preserves your logged-in session when
     # re-running for testing).
     with _perf_phase("session.setup"):
-        if not KEEPDAEMON:
-            kill_existing_daemons()
-        s, ping_out = await run("print('ping')")
-        if 'ping' in ping_out:
-            print("  Reusing existing daemon (already running)")
+        if KEEPDAEMON:
+            # Reuse a live daemon if one answers; otherwise start one.
+            s, ping_out = await run("print('ping')")
+            if 'ping' in ping_out:
+                print("  Reusing existing daemon (already running)")
+            else:
+                await step_start_daemon()
         else:
+            # Start the daemon via `uvx openbrowser-ai` (the uvx-managed
+            # interpreter that actually has the `openbrowser` package) BEFORE the
+            # first run(). The openbrowser client auto-starts the server with
+            # sys.executable (system python3, which lacks the package) and would
+            # fail with ModuleNotFoundError / hang, so we must never let run()
+            # be the first thing to bring the daemon up.
+            kill_existing_daemons()
             await step_start_daemon()
+        # Confirm the daemon is up (auto-start can no longer fire; it's running).
+        s, ping_out = await run("print('ping')")
+        if 'ping' not in ping_out:
+            print("  WARNING: daemon not responding after start")
         if await _already_logged_in():
             print("  Already logged in; skipping navigation + login wait")
         else:

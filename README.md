@@ -14,6 +14,22 @@ Install all dependencies with:
 pip install -r requirements.txt
 ```
 
+> **Interpreter matters.** `export_emails.py` imports the `openbrowser` package, so it
+> must be run with the **same Python** that `pip install -r requirements.txt` targeted.
+> The simplest reliable setup is a virtual environment:
+>
+> ```bash
+> python3 -m venv .venv && . .venv/bin/activate
+> pip install -r requirements.txt
+> python export_emails.py ...     # the venv's python has openbrowser
+> ```
+>
+> If you installed `openbrowser-ai` via `uvx` instead, run the script with that
+> environment's interpreter (e.g. `~/.local/share/uv/tools/openbrowser-ai/bin/python3`),
+> not the system `python3` (which typically lacks `openbrowser` and fails at import).
+> The script fails loudly if `openbrowser` can't be imported, so a wrong interpreter is
+> caught immediately.
+
 ---
 
 ## 1. How to run
@@ -35,7 +51,7 @@ tool prompts for them once and saves them to `~/.config/emailexporter4mail.com/s
 (outside the repo, `chmod 600`) so subsequent runs auto-fill. Override anytime via the
 environment variables.
 
-### Direct (headless / scripted)
+### Direct (command line)
 
 ```bash
 # Full export (all pages + Drafts folder) into a fresh per-run folder
@@ -45,6 +61,11 @@ OPEXPORT_RUN=run1 python3 export_emails.py
 OPEXPORT_RUN=sel1 python3 export_emails.py --select 1:-3,2:5,last:-1
 #   page 1, last 3 emails (oldest) · page 2, first 5 (newest) · last page, last 1 (oldest)
 ```
+
+The browser is **visible by default** — mail.com login is interactive, so the daemon
+opens a real window for you to log in. `OPEXPORT_HEADLESS=true` is only for hands-off
+runs where a saved login / `storage_state` already exists (otherwise there is no window
+to log into and the run will wait forever).
 
 | Flag | Purpose |
 |---|---|
