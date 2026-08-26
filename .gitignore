@@ -1,0 +1,24 @@
+# Local-only scripts (maintenance / debug / probe) — kept for reference, not published
+scratch/
+
+# Local saved personal credentials (also lives outside the repo, defensive)
+.settings.local.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Export artifacts (in case OPEXPORT_ROOT points inside the repo)
+eml/
+html/
+attachments/
+drafts/
+diagnostics/
+export_progress.json
+email_index.txt
+perf_log.jsonl
+.opexport_runs.json
+
+# OS
+.DS_Store

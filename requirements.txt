@@ -1,0 +1,6 @@
+questionary>=2.0
+openbrowser-ai
+playwright
+# NOTE: the browser daemon is launched via `uvx openbrowser-ai daemon start`
+# (not a plain `pip install`), so `pip install -r requirements.txt` provides the
+# Python client/libraries but the daemon itself is run through uvx.
