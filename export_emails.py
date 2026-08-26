@@ -238,31 +238,90 @@ def _resolve_run_name() -> str:
         name = re.sub(r'[^A-Za-z0-9_.-]+', '_', name).strip('_')
         if name:
             return name
-    return "run_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Default: a STABLE name derived from the filter, so the folder is
+    # self-identifying (you can tell which archive is which from `ls`) and
+    # resumable across runs — the same filter always maps to the same folder,
+    # so export_progress.json is reused. Renaming would break resume, so we
+    # never embed a run date here; currency is shown via the ARCHIVE_* marker.
+    term = (SEARCH_TERM or "mail").strip()
+    base = re.sub(r'[^A-Za-z0-9_.-]+', '_', term).strip('_')
+    folder = (SEARCH_FOLDER or "All folders").strip()
+    if folder and folder.lower() != "all folders":
+        fpart = re.sub(r'[^A-Za-z0-9_.-]+', '_', folder).strip('_')
+        base = f"{base}__{fpart}"
+    return base or ("run_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
 
-RUN_NAME = _resolve_run_name()
-RUN_DIR = os.path.join(BASE_DIR, RUN_NAME)
-PROGRESS_DIR = RUN_DIR  # ALL output dirs derive from this single value
+
+def _write_archive_marker(completed: bool, count: int) -> None:
+    """Write a self-describing status marker in the run folder so the archive's
+    currency is visible from `ls` without opening progress.json. Format:
+        ARCHIVE_COMPLETE_till_<newest>_from_<oldest>_emails_<N>
+    The marker lives in the run-folder root, so it is ignored by the eml/html/
+    attachment artifact scans and does not affect resumability. Older markers
+    are removed first so only the latest state is shown."""
+    status = "COMPLETE" if completed else "PARTIAL"
+    idx_path = os.path.join(RUN_DIR, "email_index.txt")
+    newest = oldest = "unknown"
+    if os.path.isfile(idx_path):
+        dates: list[str] = []
+        try:
+            with open(idx_path, "r", encoding="utf-8", errors="replace") as _f:
+                for _line in _f:
+                    _m = re.match(r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}", _line)
+                    if _m:
+                        dates.append(_m.group(1))
+            if dates:
+                newest = dates[0]   # email_index.txt is newest-first
+                oldest = dates[-1]
+        except OSError:
+            pass
+    # Remove stale markers from prior runs.
+    try:
+        for _old in os.listdir(RUN_DIR):
+            if _old.startswith("ARCHIVE_") and "_till_" in _old:
+                try:
+                    os.remove(os.path.join(RUN_DIR, _old))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    _marker = os.path.join(
+        RUN_DIR, f"ARCHIVE_{status}_till_{newest}_from_{oldest}_emails_{count}")
+    try:
+        with open(_marker, "w", encoding="utf-8") as _f:
+            _f.write(f"status={status}\nnewest={newest}\noldest={oldest}\nemails={count}\n")
+    except OSError:
+        pass
+
+
+def _derive_dirs(name: str) -> None:
+    """Set RUN_NAME/RUN_DIR and ALL derived output paths from a run name.
+
+    Called at import (once SEARCH_TERM/SEARCH_FOLDER are known) and again in
+    main() after the filter is finalized, so re-deriving the name never leaves
+    stale folder globals behind. The name is stable per filter => resume-safe."""
+    global RUN_NAME, RUN_DIR, PROGRESS_DIR, PROGRESS_FILE, EML_DIR, HTML_DIR, \
+        ATTACH_DIR, DRAFTS_DIR, DRAFTS_EML_DIR, DRAFTS_HTML_DIR, DRAFTS_ATT_DIR
+    RUN_NAME = name
+    RUN_DIR = os.path.join(BASE_DIR, name)
+    PROGRESS_DIR = RUN_DIR
+    PROGRESS_FILE = os.path.join(PROGRESS_DIR, "export_progress.json")
+    EML_DIR = os.path.join(PROGRESS_DIR, "eml")
+    HTML_DIR = os.path.join(PROGRESS_DIR, "html")
+    ATTACH_DIR = os.path.join(PROGRESS_DIR, "attachments")
+    DRAFTS_DIR = os.path.join(PROGRESS_DIR, "drafts")
+    DRAFTS_EML_DIR = os.path.join(DRAFTS_DIR, "eml")
+    DRAFTS_HTML_DIR = os.path.join(DRAFTS_DIR, "html")
+    DRAFTS_ATT_DIR = os.path.join(DRAFTS_DIR, "attachments")
 
 # The openbrowser daemon ALWAYS downloads into this fixed folder (hardcoded in the
 # daemon package). It is only a transient STAGING area: downloads are detected here
 # and then relocated into the per-run PROGRESS_DIR. Keep detection pointed at it.
 STAGE_DIR = os.path.expanduser("~/Downloads/openbrowser-daemon")
 
-PROGRESS_FILE = os.path.join(PROGRESS_DIR, "export_progress.json")
 RUN_STATE_FILE = os.path.join(BASE_DIR, ".opexport_runs.json")  # per-run completion status
-
-# Separate folders per file type, as requested.
-EML_DIR = os.path.join(PROGRESS_DIR, "eml")
-HTML_DIR = os.path.join(PROGRESS_DIR, "html")
-ATTACH_DIR = os.path.join(PROGRESS_DIR, "attachments")
-
-# Drafts are real emails too, but must land in their own folder (separate from
-# sent/received). They appear in the search results tagged `div title=Drafts`.
-DRAFTS_DIR = os.path.join(PROGRESS_DIR, "drafts")
-DRAFTS_EML_DIR = os.path.join(DRAFTS_DIR, "eml")
-DRAFTS_HTML_DIR = os.path.join(DRAFTS_DIR, "html")
-DRAFTS_ATT_DIR = os.path.join(DRAFTS_DIR, "attachments")
+# (Per-run output dirs — PROGRESS_FILE/EML_DIR/HTML_DIR/ATTACH_DIR/DRAFTS_* — are
+# derived by _derive_dirs() once the run name is known.)
 
 # Expected page size for non-last pages. mail.com shows 50 items per page in
 # list-only mode (confirmed: page 3 of the test mailbox renders all 50).
@@ -302,6 +361,11 @@ SEARCH_TERM = os.environ.get("OPEXPORT_SEARCH_TERM") or None
 SEARCH_FIELD = os.environ.get("OPEXPORT_SEARCH_FIELD", "All headers")
 # Which folder(s) to search. "All folders" or a specific folder name.
 SEARCH_FOLDER = os.environ.get("OPEXPORT_SEARCH_FOLDER", "All folders")
+
+# Derive all run-folder paths now that the filter is known. main() re-derives
+# them again after the filter is finalized (env -> config -> prompt); the name
+# is stable per filter, so the same filter always reuses the same folder.
+_derive_dirs(_resolve_run_name())
 # The logged-in mailbox address. Used to decide whether an email was SENT (you
 # are the sender) or RECEIVED (you are the recipient), and to pick the other
 # party for the filename. Resolved at runtime (env -> local saved config ->
@@ -2882,7 +2946,9 @@ def cleanup_strays():
 
 
 async def main():
-    global _BOGUS_IDS, _FAIL_COUNTS, _PENDING, SEARCH_TERM, LOCAL_ACCOUNT
+    global _BOGUS_IDS, _FAIL_COUNTS, _PENDING, SEARCH_TERM, LOCAL_ACCOUNT, \
+        RUN_NAME, RUN_DIR, PROGRESS_DIR, PROGRESS_FILE, EML_DIR, HTML_DIR, \
+        ATTACH_DIR, DRAFTS_DIR, DRAFTS_EML_DIR, DRAFTS_HTML_DIR, DRAFTS_ATT_DIR
     _t0 = time.time()
     # Resolve personal credentials (env -> local saved config -> prompt). Done at
     # runtime, not import, so library imports never trigger a prompt.
@@ -2894,6 +2960,12 @@ async def main():
         "OPEXPORT_LOCAL_ACCOUNT", "local_account",
         "Enter the logged-in mail.com address (you):",
         "you@example.com")
+    # Re-derive the run folder name NOW that the filter (SEARCH_TERM) is known,
+    # so the default name is based on the filter. An explicit OPEXPORT_RUN still
+    # wins (handled inside _resolve_run_name). The name is stable per filter, so
+    # re-running the same filter resumes the existing archive instead of starting
+    # a new timestamped folder.
+    _derive_dirs(_resolve_run_name())
     FRESH = '--fresh' in sys.argv
     NEW = '--new' in sys.argv
     LIMIT = None
@@ -2944,10 +3016,10 @@ async def main():
     global _perf_log
     _perf_log = PerfLog(os.path.join(PROGRESS_DIR, "perf_log.jsonl"))
     # ── Folder conflict resolution ──────────────────────────────────────
-    # If the run folder already has content, the user should decide how to
-    # proceed instead of silently resuming (which is easy to miss when you
-    # expected a clean run). --fresh and --select skip the prompt (fresh is
-    # already explicit opt-in; --select implies a targeted extraction).
+    # The same filter maps to the same stable run folder, so an existing folder
+    # is almost always "continue to update my archive" — auto-resume instead of
+    # prompting (which also avoids crashing in a non-TTY). A clean start is still
+    # available via --fresh. --select/--new/--from skip this (targeted runs).
     if not FRESH and not SELECT and not NEW and not FROM:
         _non_empty = (
             (os.path.isdir(EML_DIR) and any(f.endswith('.eml') for f in os.listdir(EML_DIR)))
@@ -2955,31 +3027,12 @@ async def main():
             or (os.path.isfile(PROGRESS_FILE) and load_progress().get("exported", 0) > 0)
         )
         if _non_empty:
-            print(f"\n  Destination folder '{RUN_NAME}' already has exported emails.")
-            print(f"  Options:")
-            print(f"    c  Continue (resume) — keep existing progress, pick up where left off")
-            print(f"    f  Fresh start       — archive existing files, reset progress")
-            print(f"    n  New folder        — exit and re-run with a different OPEXPORT_RUN")
-            print(f"    a  Abort             — exit immediately")
-            _choice = ""
-            while _choice not in ("c", "f", "n", "a"):
-                _choice = input("  Choose [c/f/n/a]: ").strip().lower()
-            if _choice == "f":
-                print("  Fresh start: archiving existing files, starting from scratch")
-                archive_old_exports()
-                FRESH = True
-            elif _choice == "n":
-                _new_run = f"{RUN_NAME}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                print(f"  Restarting with OPEXPORT_RUN={_new_run}")
-                _env = os.environ.copy()
-                _env["OPEXPORT_RUN"] = _new_run
-                os.execvpe(sys.executable,
-                          [sys.executable, os.path.abspath(__file__)] + sys.argv[1:],
-                          _env)
-            elif _choice == "a":
-                print("  Aborted by user")
-                sys.exit(0)
-            # 'c': fall through to normal resume
+            # Auto-resume: the same filter maps to the same stable folder, so an
+            # existing folder is almost always "continue to update my archive".
+            # This also avoids the old interactive prompt crashing in a non-TTY.
+            # A clean start is still available via --fresh.
+            print(f"\n  Destination folder '{RUN_NAME}' already has exported emails — "
+                  f"auto-resuming (continue) to update the existing archive.")
     prog = load_progress()
     os.makedirs(EML_DIR, exist_ok=True)
     os.makedirs(HTML_DIR, exist_ok=True)
@@ -3317,6 +3370,13 @@ print(f"PAGES={m.group(1) if m else '0'}")
     prog = load_progress()
     recorded_partials = prog.get("partials", [])
     open_partials = sorted(set(recorded_partials) | set(disk_partials_end))
+    # Write a self-describing status marker so the archive's currency (and
+    # completeness) is visible from `ls` of the run folder without opening
+    # progress.json. 'completed' mirrors the same completeness check used by
+    # the end-of-run banner below.
+    _archive_incomplete = bool(open_partials) or bool(_PENDING) or (total_given_up > 0) \
+        or (TOTAL and len(seen_ids) < TOTAL)
+    _write_archive_marker(not _archive_incomplete, n)
     files = count_downloaded_files()
     with _perf_phase("session.summary", total_new=total_new, files=files):
         incomplete = bool(open_partials) or bool(_PENDING) or (total_given_up > 0) \

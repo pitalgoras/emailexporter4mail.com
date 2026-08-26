@@ -21,6 +21,8 @@ OPEXPORT_ROOT (~/Downloads/openbrowser-daemon)/
       attachments/
     export_progress.json   # resume state (incl. bogus_ids / fail_counts for retry-pending)
     email_index.txt        # newest-first index (generated at end)
+    ARCHIVE_COMPLETE_till_<newest>_from_<oldest>_emails_<N>   # status marker (see below)
+    ARCHIVE_PARTIAL_till_<newest>_from_<oldest>_emails_<N>    # written when some emails fail
     perf_log.jsonl          # structured performance log (PerfLog)
     diagnostics/           # written for each retry-pending email
       <eid>.json           # failure reason + per-step flags + counts
@@ -146,7 +148,7 @@ This means the delay converges upward to the minimum reliable value for the curr
 
 ### Config env vars (all `OPEXPORT_*`)
 See README §2 for full table. Key ones:
-- `OPEXPORT_ROOT`, `OPEXPORT_RUN` — output paths
+- `OPEXPORT_ROOT`, `OPEXPORT_RUN` — output paths. `OPEXPORT_RUN` defaults to the **sanitized search term** (e.g. `admin.aoawinner.com`, or `…__Inbox` when a specific folder is set) so each archive folder is self-identifying and stable per filter (resumable). Explicit `OPEXPORT_RUN` still overrides. See README §2/§3.1.
 - `OPEXPORT_SEARCH_TERM`, `_FIELD`, `_FOLDER` — search criteria
 - `OPEXPORT_LOCAL_ACCOUNT` — logged-in address
 - `OPEXPORT_HEADLESS` / `OPEXPORT_DEBUG` — session mode

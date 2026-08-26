@@ -82,10 +82,10 @@ for back-to-back test re-runs (the script reuses the existing daemon if it respo
 to a ping).
 
 **Folder conflict resolution:** When the run folder already has exported emails and
-no `--fresh`, `--select`, `--new`, or `--from` flag is given, the script prompts interactively:
-`c` to continue/resume, `f` for a fresh start (archives old files, resets state),
-`n` to exit and re-run with a different `OPEXPORT_RUN`, or `a` to abort. This
-prevents accidentally resuming when you expected a clean run.
+no `--fresh`, `--select`, `--new`, or `--from` flag is given, the script **auto-resumes**
+(continues updating the existing archive) — it does not prompt. This makes re-running the
+same filter a seamless "update my backup" operation, and also avoids the old interactive
+prompt crashing in a non-TTY. A clean start is always available via `--fresh`.
 
 ---
 
@@ -94,7 +94,7 @@ prevents accidentally resuming when you expected a clean run.
 | Variable | Default | Purpose |
 |---|---|---|---|
 | `OPEXPORT_ROOT` | `~/Downloads/openbrowser-daemon` | Base dir that holds **one sub-folder per run**. |
-| `OPEXPORT_RUN` | *(timestamped)* | Run folder name. A stable name = resume/reuse the same folder; omitting it creates a unique timestamped folder so runs never collide. |
+| `OPEXPORT_RUN` | *(filter-based)* | Run folder name. **If omitted, it defaults to the sanitized search term** (e.g. `admin.aoawinner.com`, or `admin.aoawinner.com__Inbox` when a specific folder is set), so each archive is self-identifying and reusing the same filter reuses the same folder (resumable). Set it explicitly to override. Renaming is never automatic, so resume is never broken. |
 | `OPEXPORT_SEARCH_TERM` | *(prompted / env)* | Text/address/domain to search for. If unset, the tool prompts once and saves it locally. |
 | `OPEXPORT_SEARCH_FIELD` | `All headers` | Where to match (`All headers` / `Sender` / `Recipient` / `Subject`). |
 | `OPEXPORT_SEARCH_FOLDER` | `All folders` | Folder scope (`All folders` or a specific folder). |
@@ -118,12 +118,20 @@ prevents accidentally resuming when you expected a clean run.
 
 ### 3.1 Per-run output folders (single source of truth)
 - `BASE_DIR = OPEXPORT_ROOT`
-- `RUN_DIR  = BASE_DIR / OPEXPORT_RUN`  (or a timestamped name)
+- `RUN_DIR  = BASE_DIR / OPEXPORT_RUN`  (default: the sanitized search term, so the
+  folder is self-identifying and stable per filter — see §2 `OPEXPORT_RUN`)
 - `PROGRESS_DIR = RUN_DIR` — **all** output dirs derive from this one value:
   `EML_DIR`, `HTML_DIR`, `ATTACH_DIR`, `DRAFTS_*`, `PROGRESS_FILE`.
 - Each run is fully isolated. There is **no cross-run `exported_ids` pollution**
   (an earlier bug where run 8 silently skipped emails that run 7 had already
   exported into the shared folder).
+- **Archive status marker:** at the end of every run the folder root gets a
+  self-describing file you can read straight from `ls`, e.g.
+  `ARCHIVE_COMPLETE_till_2026-08-26_from_2025-07-08_emails_168` (or `ARCHIVE_PARTIAL_…`
+  when some emails failed). `till` = newest email date, `from` = oldest email date,
+  `emails` = count. This makes it easy to see, at a glance, which archive is which and
+  how current it is — without opening `export_progress.json`. The name never embeds a
+  date, so resume is never broken.
 
 ### 3.2 Staging vs output
 The openbrowser daemon **hardcodes** its download directory to
