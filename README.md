@@ -65,8 +65,6 @@ to log into and the run will wait forever).
 | `--from PAGE.INDEX` | Start at a specific email (e.g. `--from 1.25` = page 1, email #25). Sets start page and skip count. |
 | `--count N` | Export N emails from the start position. Alias for `--limit`. Use with `--from` for a contiguous range. |
 | `--to PAGE.INDEX` | Export through a specific email (e.g. `--from 1.25 --to 2.1`). Computes count from start to end (inclusive). Requires `--from`. |
-| `--limit N` | Stop after N newly exported emails (counts only first-time exports) |
-| `--select PAGE:COUNT,...` | Targeted extraction. `COUNT>0` = newest N on page, `COUNT<0` = oldest N. `last` as page = final page. Skips non-listed pages entirely. |
 | `--keepdaemon` | Skip killing stale daemon processes on start (preserves a logged-in session for faster re-runs during development) |
 | `--dry-run` | (run_interactive.py only) Print the generated command and environment without executing |
 
@@ -183,8 +181,7 @@ python3 scratch/clean_failed_runs.py --apply    # empty their folders (status ->
 ### 3.4 Drafts routing
 Drafts appear in search results tagged `div title="Drafts"` (the per-row folder
 tag; the sidebar's `title=Drafts` carries an `N/M` count and is excluded). They
-are exported into `RUN_DIR/drafts/{eml,html,attachments}`. A dedicated Drafts
-folder pass also runs (unless `--select`) to guarantee capture.
+are exported into `RUN_DIR/drafts/{eml,html,attachments}`.
 
 ---
 
